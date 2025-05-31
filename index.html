@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Event Text to Google Calendar Link</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .loader {
+            border-top-color: #3498db;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        /* Custom scrollbar for results - optional */
+        #resultsContainer::-webkit-scrollbar {
+            width: 8px;
+        }
+        #resultsContainer::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        #resultsContainer::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        #resultsContainer::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-slate-900 to-slate-800 min-h-screen flex flex-col items-center justify-center p-4 text-slate-100">
+
+    <div class="bg-slate-800 shadow-2xl rounded-xl p-6 md:p-10 w-full max-w-2xl">
+        <header class="mb-8 text-center">
+            <h1 class="text-3xl md:text-4xl font-bold text-sky-400">Event Extractor</h1>
+            <p class="text-slate-400 mt-2">Paste your event descriptions below and I'll generate Google Calendar links for you!</p>
+        </header>
+
+        <main>
+            <div class="mb-6">
+                <label for="eventText" class="block text-sm font-medium text-slate-300 mb-1">Event Descriptions:</label>
+                <textarea id="eventText" rows="6" class="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg text-slate-100 focus:ring-2 focus:ring-sky-500 focus:border-sky-500 transition-shadow" placeholder="e.g., Meeting with a client next Monday at 10am for 1 hour.&#10;Project deadline review June 5th at 3 PM.&#10;Lunch with Sarah tomorrow at 1pm at The Cafe."></textarea>
+            </div>
+
+            <button id="processButton" class="w-full bg-sky-500 hover:bg-sky-600 text-white font-semibold py-3 px-4 rounded-lg transition-all duration-150 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-sky-400 focus:ring-opacity-75 shadow-md">
+                Extract Events & Generate Links
+            </button>
+
+            <div id="loadingIndicator" class="mt-6 text-center hidden">
+                <div class="loader ease-linear rounded-full border-4 border-t-4 border-slate-500 h-12 w-12 mb-4 mx-auto"></div>
+                <p class="text-slate-400">Processing your text... please wait.</p>
+            </div>
+
+            <div id="errorContainer" class="mt-6 p-4 bg-red-700 text-red-100 rounded-lg hidden">
+                <p id="errorMessage"></p>
+            </div>
+
+            <div id="resultsContainer" class="mt-8 space-y-4 max-h-[50vh] overflow-y-auto pr-2">
+                </div>
+        </main>
+
+        <footer class="mt-10 text-center text-xs text-slate-500">
+            <p>Dates and times are interpreted based on current context and converted to UTC for Google Calendar.</p>
+        </footer>
+    </div>
+
+    <script>
+        const processButton = document.getElementById('processButton');
+        const eventTextarea = document.getElementById('eventText');
+        const loadingIndicator = document.getElementById('loadingIndicator');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const errorContainer = document.getElementById('errorContainer');
+        const errorMessageElement = document.getElementById('errorMessage');
+
+        // Store the current date and time for context to the LLM
+        // The LLM is informed of this in the prompt construction.
+        const currentContextDate = new Date();
+        const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+
+        processButton.addEventListener('click', handleProcessEvents);
+
+        async function handleProcessEvents() {
+            const text = eventTextarea.value.trim();
+            if (!text) {
+                displayError("Please enter some text describing your events.");
+                return;
+            }
+
+            showLoading(true);
+            clearResultsAndErrors();
+
+            try {
+                const events = await callGeminiAPI(text);
+                if (events && events.length > 0) {
+                    displayEvents(events);
+                } else {
+                    displayError("No events could be extracted. Try rephrasing your input or adding more details. For example, include specific dates and times like 'Meeting next Tuesday at 2 PM'.");
+                }
+            } catch (error) {
+                console.error("Error processing events:", error);
+                displayError(`An error occurred: ${error.message}. Check console for details.`);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function showLoading(isLoading) {
+            if (isLoading) {
+                loadingIndicator.classList.remove('hidden');
+                processButton.disabled = true;
+                processButton.classList.add('opacity-50', 'cursor-not-allowed');
+            } else {
+                loadingIndicator.classList.add('hidden');
+                processButton.disabled = false;
+                processButton.classList.remove('opacity-50', 'cursor-not-allowed');
+            }
+        }
+
+        function clearResultsAndErrors() {
+            resultsContainer.innerHTML = '';
+            errorContainer.classList.add('hidden');
+            errorMessageElement.textContent = '';
+        }
+
+        function displayError(message) {
+            errorMessageElement.textContent = message;
+            errorContainer.classList.remove('hidden');
+            resultsContainer.innerHTML = ''; // Clear any previous results
+        }
+
+        /**
+         * Calls the Gemini API to extract event details from text.
+         * @param {string} inputText - The text containing event descriptions.
+         * @returns {Promise<Array<Object>>} A promise that resolves to an array of event objects.
+         */
+        async function callGeminiAPI(inputText) {
+            // Construct the prompt for the LLM
+            // The current date and user's timezone are crucial for interpreting relative dates like "tomorrow" or "next Monday".
+            const prompt = `You are an expert event parser. Extract all events from the following text.
+User's current date and time: ${currentContextDate.toString()}
+User's timezone: ${userTimeZone}
+
+For each event, provide:
+1.  'title': The event title.
+2.  'startDateTime': The start date and time in UTC, formatted as ISO 8601 (YYYY-MM-DDTHH:MM:SSZ).
+3.  'endDateTime': The end date and time in UTC, formatted as ISO 8601 (YYYY-MM-DDTHH:MM:SSZ). If no end time or duration is specified, assume a 1-hour duration from the startDateTime.
+4.  'description': A brief description. If not much detail is provided, use the event title or a concise summary.
+5.  'location': The location, if specified. Otherwise, this can be an empty string or null.
+
+Interpret relative dates/times (e.g., "next Tuesday at 3 PM", "tomorrow morning") based on the user's current date/time and timezone, then convert them to UTC.
+If a specific time is not mentioned for an event (e.g., "Vacation from July 1st to July 5th"), assume a sensible default time like 09:00 AM in the user's local timezone for the start of the day's event, and convert to UTC. For multi-day events without specific times, you can set startDateTime to the beginning of the start day (e.g., 00:00:00Z after converting from local 9 AM) and endDateTime to the end of the end day (e.g., 23:59:59Z after converting from local 5 PM or similar). Or, more simply, if it's an all-day event, just provide the date part for start/end and Google Calendar link will handle it if times are omitted or are 00:00:00 to 00:00:00 next day. For simplicity, aim for specific start/end UTC datetimes.
+
+Respond ONLY with a JSON array of event objects matching the schema below. If no events are found, return an empty array.
+
+Text to parse:
+"${inputText}"`;
+
+            const payload = {
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "ARRAY",
+                        items: {
+                            type: "OBJECT",
+                            properties: {
+                                "title": { "type": "STRING", "description": "The title of the event." },
+                                "startDateTime": { "type": "STRING", "description": "The start date and time in UTC (ISO 8601: YYYY-MM-DDTHH:MM:SSZ)." },
+                                "endDateTime": { "type": "STRING", "description": "The end date and time in UTC (ISO 8601: YYYY-MM-DDTHH:MM:SSZ)." },
+                                "description": { "type": "STRING", "description": "A brief description of the event." },
+                                "location": { "type": "STRING", "description": "The location of the event. Optional." }
+                            },
+                            required: ["title", "startDateTime", "endDateTime"]
+                        }
+                    }
+                }
+            };
+
+            const apiKey = ""; // API key will be injected by the environment if needed
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorBody = await response.text();
+                console.error("API Error Response:", errorBody);
+                throw new Error(`API request failed with status ${response.status}. ${errorBody}`);
+            }
+
+            const result = await response.json();
+
+            if (result.candidates && result.candidates.length > 0 &&
+                result.candidates[0].content && result.candidates[0].content.parts &&
+                result.candidates[0].content.parts.length > 0) {
+                const jsonText = result.candidates[0].content.parts[0].text;
+                try {
+                    return JSON.parse(jsonText);
+                } catch (e) {
+                    console.error("Failed to parse JSON response from LLM:", jsonText);
+                    throw new Error("Received malformed data from the AI. Please try rephrasing.");
+                }
+            } else {
+                 console.warn("No valid candidates in API response:", result);
+                 // Check for promptFeedback if available
+                 if (result.promptFeedback && result.promptFeedback.blockReason) {
+                    throw new Error(`Request blocked: ${result.promptFeedback.blockReason}. ${result.promptFeedback.blockReasonMessage || ''}`);
+                 }
+                 return []; // Return empty array if no events found or unexpected structure
+            }
+        }
+
+        /**
+         * Displays the extracted events as cards in the UI.
+         * @param {Array<Object>} events - An array of event objects.
+         */
+        function displayEvents(events) {
+            resultsContainer.innerHTML = ''; // Clear previous results
+
+            if (events.length === 0) {
+                resultsContainer.innerHTML = `<p class="text-slate-400 text-center">No events found in the provided text.</p>`;
+                return;
+            }
+
+            events.forEach((event, index) => {
+                const calendarLink = generateCalendarLink(event);
+
+                // Format dates for display (more readable)
+                const displayStartDate = formatDisplayDateTime(event.startDateTime);
+                const displayEndDate = formatDisplayDateTime(event.endDateTime);
+
+                const eventCard = `
+                    <div class="bg-slate-700 p-4 rounded-lg shadow-md border border-slate-600">
+                        <h3 class="text-lg font-semibold text-sky-300 mb-2">${event.title || 'Untitled Event'}</h3>
+                        <p class="text-sm text-slate-300 mb-1"><strong>From:</strong> ${displayStartDate}</p>
+                        <p class="text-sm text-slate-300 mb-1"><strong>To:</strong> ${displayEndDate}</p>
+                        ${event.location ? `<p class="text-sm text-slate-300 mb-1"><strong>Location:</strong> ${event.location}</p>` : ''}
+                        ${event.description ? `<p class="text-sm text-slate-400 my-2"><strong>Details:</strong> ${event.description}</p>` : ''}
+                        <a href="${calendarLink}" target="_blank" rel="noopener noreferrer" class="mt-3 inline-block bg-green-500 hover:bg-green-600 text-white font-medium py-2 px-4 rounded-md text-sm transition-colors">
+                            Add to Google Calendar
+                        </a>
+                    </div>
+                `;
+                resultsContainer.insertAdjacentHTML('beforeend', eventCard);
+            });
+        }
+
+        /**
+         * Generates a Google Calendar event creation URL.
+         * @param {Object} event - The event object.
+         * @returns {string} The Google Calendar URL.
+         */
+        function generateCalendarLink(event) {
+            const baseUrl = "https://www.google.com/calendar/render?action=TEMPLATE";
+            
+            // Google Calendar link format for dates: YYYYMMDDTHHMMSSZ (UTC)
+            // The LLM should provide dates in ISO 8601 UTC (YYYY-MM-DDTHH:MM:SSZ)
+            const formatGCALDateTime = (isoString) => {
+                if (!isoString) return '';
+                try {
+                    // Check if it's just a date (YYYY-MM-DD), common for all-day events
+                    if (isoString.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                        return isoString.replace(/-/g, ''); // Format as YYYYMMDD for all-day
+                    }
+                    // Otherwise, assume full ISO string
+                    const date = new Date(isoString);
+                    // Ensure it's a valid date; otherwise, LLM might have sent something odd
+                    if (isNaN(date.getTime())) {
+                        console.warn("Invalid date string for GCAL formatting:", isoString);
+                        return ""; // Or handle error appropriately
+                    }
+                    return date.toISOString().replace(/-|:|\.\d{3}/g, ''); // Removes -, :, and milliseconds
+                } catch (e) {
+                    console.error("Error formatting date for Google Calendar:", isoString, e);
+                    return ""; // Fallback for safety
+                }
+            };
+
+            const gcalStartDate = formatGCALDateTime(event.startDateTime);
+            const gcalEndDate = formatGCALDateTime(event.endDateTime);
+
+            let datesParam = '';
+            if (gcalStartDate && gcalEndDate) {
+                datesParam = `&dates=${gcalStartDate}/${gcalEndDate}`;
+            } else if (gcalStartDate) { // Handle case where only start date might be validly formatted (e.g. all day)
+                 datesParam = `&dates=${gcalStartDate}/${gcalStartDate}`; // For a single day event if end is missing/invalid
+            }
+
+
+            const params = new URLSearchParams();
+            params.append('text', event.title || 'Event');
+            // Dates param is handled separately due to its specific format
+            if (event.description) {
+                params.append('details', event.description);
+            }
+            if (event.location) {
+                params.append('location', event.location);
+            }
+            // Add ctz (timezone) if you are NOT using Z (UTC) in dates.
+            // Since we are aiming for UTC (Z) from LLM, ctz is not strictly needed but can be a fallback.
+            // params.append('ctz', 'UTC'); // Explicitly stating UTC, though Z in dates implies it.
+
+            return `${baseUrl}${datesParam}&${params.toString()}`;
+        }
+
+        /**
+         * Formats an ISO date string into a more readable format for display.
+         * @param {string} isoString - The ISO date string (e.g., "2025-06-03T17:00:00Z").
+         * @returns {string} A formatted date string (e.g., "Tue, Jun 3, 2025, 10:00 AM PDT").
+         */
+        function formatDisplayDateTime(isoString) {
+            if (!isoString) return 'N/A';
+            try {
+                const date = new Date(isoString);
+                 if (isNaN(date.getTime())) return 'Invalid Date';
+                // Display in user's local time
+                return date.toLocaleString(undefined, { 
+                    weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', 
+                    hour: 'numeric', minute: '2-digit', timeZoneName: 'short' 
+                });
+            } catch (e) {
+                console.error("Error formatting display date:", isoString, e);
+                return isoString; // Fallback to raw string
+            }
+        }
+
+    </script>
+</body>
+</html>
