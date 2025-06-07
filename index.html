@@ -39,7 +39,7 @@
     <div class="bg-slate-800 shadow-2xl rounded-xl p-6 md:p-10 w-full max-w-2xl">
         <header class="mb-8 text-center">
             <h1 class="text-3xl md:text-4xl font-bold text-sky-400">Event Extractor</h1>
-            <p class="text-slate-400 mt-2">Paste your event descriptions below and I'll generate Google Calendar links for you!</p>
+            <p class="text-slate-400 mt-2">Hi Kevin! Paste your event descriptions below and I'll generate Google Calendar links for you!</p>
         </header>
 
         <main>
@@ -70,6 +70,25 @@
         </footer>
     </div>
 
+    <div id="howToUseModal" class="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center p-4 hidden z-50">
+        <div class="modal-content bg-slate-800 rounded-xl shadow-2xl p-6 w-full max-w-md relative text-slate-200 border border-slate-700">
+            <button id="closeModalButton" title="Close" class="absolute top-2 right-2 text-slate-500 hover:text-white transition-colors duration-200 p-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+            <h2 class="text-2xl font-bold text-sky-400 mb-4">How to Add Events to Calendar</h2>
+            <div class="space-y-3 text-slate-300">
+                <p>On each event card, there is a green button that says <strong>"Add to Google Calendar"</strong>.</p>
+                <p>Click this button for the event you want to save. A new tab will automatically open in your browser, taking you directly to the Google Calendar "Create Event" page.</p>
+                <hr class="border-slate-600 my-4">
+                <h3 class="text-lg font-semibold text-sky-300">Confirm and Save</h3>
+                <p>In the new Google Calendar tab, you will see that all the event details (title, date, time, description) have been pre-filled for you.</p>
+            </div>
+        </div>
+    </div>
+
+
     <script>
         const processButton = document.getElementById('processButton');
         const eventTextarea = document.getElementById('eventText');
@@ -78,13 +97,31 @@
         const errorContainer = document.getElementById('errorContainer');
         const errorMessageElement = document.getElementById('errorMessage');
 
-        // Store the current date and time for context to the LLM
-        // The LLM is informed of this in the prompt construction.
+        // Modal elements
+        const howToUseButton = document.getElementById('howToUseButton');
+        const howToUseModal = document.getElementById('howToUseModal');
+        const closeModalButton = document.getElementById('closeModalButton');
+
         const currentContextDate = new Date();
         const userTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-
+        // --- Event Listeners ---
         processButton.addEventListener('click', handleProcessEvents);
+        
+        // Modal listeners
+        howToUseButton.addEventListener('click', () => {
+            howToUseModal.classList.remove('hidden');
+        });
+        closeModalButton.addEventListener('click', () => {
+            howToUseModal.classList.add('hidden');
+        });
+        // Close modal if clicking on the background overlay
+        howToUseModal.addEventListener('click', (event) => {
+            if (event.target === howToUseModal) {
+                howToUseModal.classList.add('hidden');
+            }
+        });
+
 
         async function handleProcessEvents() {
             const text = eventTextarea.value.trim();
@@ -112,15 +149,10 @@
         }
 
         function showLoading(isLoading) {
-            if (isLoading) {
-                loadingIndicator.classList.remove('hidden');
-                processButton.disabled = true;
-                processButton.classList.add('opacity-50', 'cursor-not-allowed');
-            } else {
-                loadingIndicator.classList.add('hidden');
-                processButton.disabled = false;
-                processButton.classList.remove('opacity-50', 'cursor-not-allowed');
-            }
+            loadingIndicator.classList.toggle('hidden', !isLoading);
+            processButton.disabled = isLoading;
+            processButton.classList.toggle('opacity-50', isLoading);
+            processButton.classList.toggle('cursor-not-allowed', isLoading);
         }
 
         function clearResultsAndErrors() {
@@ -132,17 +164,10 @@
         function displayError(message) {
             errorMessageElement.textContent = message;
             errorContainer.classList.remove('hidden');
-            resultsContainer.innerHTML = ''; // Clear any previous results
+            resultsContainer.innerHTML = ''; 
         }
 
-        /**
-         * Calls the Gemini API to extract event details from text.
-         * @param {string} inputText - The text containing event descriptions.
-         * @returns {Promise<Array<Object>>} A promise that resolves to an array of event objects.
-         */
         async function callGeminiAPI(inputText) {
-            // Construct the prompt for the LLM
-            // The current date and user's timezone are crucial for interpreting relative dates like "tomorrow" or "next Monday".
             const prompt = `You are an expert event parser. Extract all events from the following text.
 User's current date and time: ${currentContextDate.toString()}
 User's timezone: ${userTimeZone}
@@ -155,7 +180,7 @@ For each event, provide:
 5.  'location': The location, if specified. Otherwise, this can be an empty string or null.
 
 Interpret relative dates/times (e.g., "next Tuesday at 3 PM", "tomorrow morning") based on the user's current date/time and timezone, then convert them to UTC.
-If a specific time is not mentioned for an event (e.g., "Vacation from July 1st to July 5th"), assume a sensible default time like 09:00 AM in the user's local timezone for the start of the day's event, and convert to UTC. For multi-day events without specific times, you can set startDateTime to the beginning of the start day (e.g., 00:00:00Z after converting from local 9 AM) and endDateTime to the end of the end day (e.g., 23:59:59Z after converting from local 5 PM or similar). Or, more simply, if it's an all-day event, just provide the date part for start/end and Google Calendar link will handle it if times are omitted or are 00:00:00 to 00:00:00 next day. For simplicity, aim for specific start/end UTC datetimes.
+For multi-day events or events without specific times (e.g., "Vacation from July 1st to July 5th"), assume it's an all-day event by providing just the date part (YYYY-MM-DD). The Google Calendar link will handle this correctly. For all other events, provide specific start/end UTC datetimes.
 
 Respond ONLY with a JSON array of event objects matching the schema below. If no events are found, return an empty array.
 
@@ -172,8 +197,8 @@ Text to parse:
                             type: "OBJECT",
                             properties: {
                                 "title": { "type": "STRING", "description": "The title of the event." },
-                                "startDateTime": { "type": "STRING", "description": "The start date and time in UTC (ISO 8601: YYYY-MM-DDTHH:MM:SSZ)." },
-                                "endDateTime": { "type": "STRING", "description": "The end date and time in UTC (ISO 8601: YYYY-MM-DDTHH:MM:SSZ)." },
+                                "startDateTime": { "type": "STRING", "description": "The start date and time in UTC (ISO 8601: YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD for all-day)." },
+                                "endDateTime": { "type": "STRING", "description": "The end date and time in UTC (ISO 8601: YYYY-MM-DDTHH:MM:SSZ or YYYY-MM-DD for all-day)." },
                                 "description": { "type": "STRING", "description": "A brief description of the event." },
                                 "location": { "type": "STRING", "description": "The location of the event. Optional." }
                             },
@@ -183,7 +208,7 @@ Text to parse:
                 }
             };
 
-            const apiKey = "AIzaSyBJL9stg2WjyeGNLVUSwJhFGjVgr9RYcdE"; // if you're reading this this API key will not work anymore it's just a demo
+            const apiKey = "AIzaSyBJL9stg2WjyeGNLVUSwJhFGjVgr9RYcdE"; // Note: This is a demo key for context and will not work.
             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
 
             const response = await fetch(apiUrl, {
@@ -212,30 +237,22 @@ Text to parse:
                 }
             } else {
                  console.warn("No valid candidates in API response:", result);
-                 // Check for promptFeedback if available
                  if (result.promptFeedback && result.promptFeedback.blockReason) {
                     throw new Error(`Request blocked: ${result.promptFeedback.blockReason}. ${result.promptFeedback.blockReasonMessage || ''}`);
                  }
-                 return []; // Return empty array if no events found or unexpected structure
+                 return [];
             }
         }
 
-        /**
-         * Displays the extracted events as cards in the UI.
-         * @param {Array<Object>} events - An array of event objects.
-         */
         function displayEvents(events) {
-            resultsContainer.innerHTML = ''; // Clear previous results
-
+            resultsContainer.innerHTML = '';
             if (events.length === 0) {
                 resultsContainer.innerHTML = `<p class="text-slate-400 text-center">No events found in the provided text.</p>`;
                 return;
             }
 
-            events.forEach((event, index) => {
+            events.forEach((event) => {
                 const calendarLink = generateCalendarLink(event);
-
-                // Format dates for display (more readable)
                 const displayStartDate = formatDisplayDateTime(event.startDateTime);
                 const displayEndDate = formatDisplayDateTime(event.endDateTime);
 
@@ -255,34 +272,24 @@ Text to parse:
             });
         }
 
-        /**
-         * Generates a Google Calendar event creation URL.
-         * @param {Object} event - The event object.
-         * @returns {string} The Google Calendar URL.
-         */
         function generateCalendarLink(event) {
             const baseUrl = "https://www.google.com/calendar/render?action=TEMPLATE";
             
-            // Google Calendar link format for dates: YYYYMMDDTHHMMSSZ (UTC)
-            // The LLM should provide dates in ISO 8601 UTC (YYYY-MM-DDTHH:MM:SSZ)
             const formatGCALDateTime = (isoString) => {
                 if (!isoString) return '';
+                if (isoString.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                    return isoString.replace(/-/g, '');
+                }
                 try {
-                    // Check if it's just a date (YYYY-MM-DD), common for all-day events
-                    if (isoString.match(/^\d{4}-\d{2}-\d{2}$/)) {
-                        return isoString.replace(/-/g, ''); // Format as YYYYMMDD for all-day
-                    }
-                    // Otherwise, assume full ISO string
                     const date = new Date(isoString);
-                    // Ensure it's a valid date; otherwise, LLM might have sent something odd
                     if (isNaN(date.getTime())) {
                         console.warn("Invalid date string for GCAL formatting:", isoString);
-                        return ""; // Or handle error appropriately
+                        return "";
                     }
-                    return date.toISOString().replace(/-|:|\.\d{3}/g, ''); // Removes -, :, and milliseconds
+                    return date.toISOString().replace(/-|:|\.\d{3}/g, '');
                 } catch (e) {
                     console.error("Error formatting date for Google Calendar:", isoString, e);
-                    return ""; // Fallback for safety
+                    return "";
                 }
             };
 
@@ -292,48 +299,39 @@ Text to parse:
             let datesParam = '';
             if (gcalStartDate && gcalEndDate) {
                 datesParam = `&dates=${gcalStartDate}/${gcalEndDate}`;
-            } else if (gcalStartDate) { // Handle case where only start date might be validly formatted (e.g. all day)
-                 datesParam = `&dates=${gcalStartDate}/${gcalStartDate}`; // For a single day event if end is missing/invalid
+            } else if (gcalStartDate) {
+                 datesParam = `&dates=${gcalStartDate}/${gcalStartDate}`;
             }
-
 
             const params = new URLSearchParams();
             params.append('text', event.title || 'Event');
-            // Dates param is handled separately due to its specific format
-            if (event.description) {
-                params.append('details', event.description);
-            }
-            if (event.location) {
-                params.append('location', event.location);
-            }
-            // Add ctz (timezone) if you are NOT using Z (UTC) in dates.
-            // Since we are aiming for UTC (Z) from LLM, ctz is not strictly needed but can be a fallback.
-            // params.append('ctz', 'UTC'); // Explicitly stating UTC, though Z in dates implies it.
+            if (event.description) params.append('details', event.description);
+            if (event.location) params.append('location', event.location);
 
             return `${baseUrl}${datesParam}&${params.toString()}`;
         }
 
-        /**
-         * Formats an ISO date string into a more readable format for display.
-         * @param {string} isoString - The ISO date string (e.g., "2025-06-03T17:00:00Z").
-         * @returns {string} A formatted date string (e.g., "Tue, Jun 3, 2025, 10:00 AM PDT").
-         */
         function formatDisplayDateTime(isoString) {
             if (!isoString) return 'N/A';
             try {
+                // Check if it's an all-day event (no time component)
+                if (isoString.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                    const date = new Date(isoString + 'T00:00:00Z'); // Assume UTC for date part
+                     return date.toLocaleDateString(undefined, { 
+                        weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC'
+                    }) + " (All day)";
+                }
                 const date = new Date(isoString);
-                 if (isNaN(date.getTime())) return 'Invalid Date';
-                // Display in user's local time
+                if (isNaN(date.getTime())) return 'Invalid Date';
                 return date.toLocaleString(undefined, { 
                     weekday: 'short', year: 'numeric', month: 'short', day: 'numeric', 
                     hour: 'numeric', minute: '2-digit', timeZoneName: 'short' 
                 });
             } catch (e) {
                 console.error("Error formatting display date:", isoString, e);
-                return isoString; // Fallback to raw string
+                return isoString;
             }
         }
-
     </script>
 </body>
 </html>
